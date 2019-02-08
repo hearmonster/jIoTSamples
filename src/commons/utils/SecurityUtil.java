@@ -42,6 +42,11 @@ public class SecurityUtil {
 
 	public static SSLSocketFactory getSSLSocketFactory(Device device, Authentication authentication)
 	throws GeneralSecurityException, IOException {
+	// Given a Device object instance, and an Authentication (a Secret, a combined Private Key + Certificate PEM, and a Password)
+	// 1. Extract the Certificate string from the combined PEM
+	// 2. Extract the Private Key string from the combined PEM
+	// 3. Create the Key Manager/KeyStore by passing the Device object instance, Certificate (PEM), Private Key (PEM) and Secret to 'getKeyManagers' (local method)
+	// 4. Create the Trust Manager/TrustStore (by default, a dumb Trust Manager with *no* Truststore whatsover who trusts whatever certificate is provided!) 
 		String secret = authentication.getSecret();
 		String pem = authentication.getPem();
 
@@ -63,6 +68,8 @@ public class SecurityUtil {
 	private static SSLSocketFactory getSSLSocketFactory(KeyManager[] keyManagers,
 		TrustManager[] trustManagers)
 	throws GeneralSecurityException, IOException {
+	//Given a 'Key Manager' and a 'Trust Manager'...
+	//Create an SSL client context (no connection yet) using the Key Manager and Trust Manager)
 
 		SSLContext sslContext = SSLContext.getInstance("TLSv1.2");
 		sslContext.init(keyManagers, trustManagers, new java.security.SecureRandom());
@@ -73,11 +80,20 @@ public class SecurityUtil {
 	private static KeyManager[] getKeyManagers(Device device, String pem,
 		String encryptedPrivateKey, String secret)
 	throws GeneralSecurityException, IOException {
+	//Given the 'Device' java object instance, the Certificate (PEM string), the Encrypted Private Key (PEM string) and the Secret (string)...
+	// 1. Decrypt the Encrypted Private Key (PEM string) using the Secret (string)
+	// 2. Convert (Base64 decode) the Base64 encoded Certificate into its native form (byte stream)
+	// 3. Generate an X509 Certificate from the original Base64 encoded Certificate (now in its native form)
+
+		// 1. Decrypt the Encrypted Private Key (PEM string) using the Secret (string)
 		PrivateKey privateKey = decryptPrivateKey(encryptedPrivateKey, secret);
 
+		// 2. Convert (Base64 decode) the Base64 encoded Certificate into its native form (byte stream)
 		ByteArrayInputStream is = new ByteArrayInputStream(
 			Base64.getMimeDecoder().decode(pem.getBytes(Constants.DEFAULT_ENCODING)));
 
+		// 3. Generate an X509 Certificate from the original Base64 encoded Certificate (now in its native form)
+		// Close the byte stream (not a file, BTW)
 		Certificate certificate;
 		try {
 			CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
@@ -87,6 +103,19 @@ public class SecurityUtil {
 			FileUtil.closeStream(is);
 		}
 
+		// 4. Create a directory to store the PKCS12 Keystore
+		//   By default, will create a directory in the temp folder
+		//   My notes on persisting the keystore:
+		//	if you substitute with this line, and run within Eclipse then the directory (named "certifcates" above)
+		//	will be created within the Eclipse Workspace Project's folder
+		// 	e.g.  C:\Users\i817399\eclipse-workspace\jIoTSamples\certificates
+			
+		//		Path keystorePath = FileSystems.getDefault().getPath(KEYSTORE_DIRECTORY_NAME);
+		//		//Simply print out the absolute path of the Keystpre directory
+	        //		Path absolutePath = keystorePath.toAbsolutePath();
+	        //		Console.printText("Path to p12 trust store: " + absolutePath.normalize().toString());
+
+		
 		Path destination = null;
 		try {
 			destination = Files.createTempDirectory(TEMP_DIRECTION_NAME);
@@ -95,19 +124,29 @@ public class SecurityUtil {
 			throw new IOException("Unable to initialize a destination to store PEM", e);
 		}
 
+		//create a new file (named of the Device's Alternate ID, with a .p12 extension) within the directory
+		// e.g. "7e76ed6981d436e4.p12"
 		File p12KeyStore = new File(destination.toFile(),
 			device.getAlternateId().replaceAll(":", "") + ".p12");
 
 		KeyStore keyStore;
 		try {
+			// Set the new KeyStore type (an empty instance, only residing in memory for now) will be of "PKCS12"
 			keyStore = KeyStore.getInstance("PKCS12");
+			// Create a new (PKCS12) KeyStore type (an empty instance, only residing in memory for now)
+			// (You create an empty keystore by using the 'load' method but pass null instead of an InputStream argument)
 			keyStore.load(null, secret.toCharArray());
 			try (FileOutputStream p12KeyStoreStream = new FileOutputStream(p12KeyStore)) {
+
+				//POTENTIAL ERROR?  This line is a duplicate of the one two commands from now! (Did he store it too early?)
+				//TODO fix
 				keyStore.store(p12KeyStoreStream, SSL_KEYSTORE_SECRET.toCharArray());
 
+				// alias, private key, certificate
 				keyStore.setKeyEntry("private", privateKey, SSL_KEYSTORE_SECRET.toCharArray(),
 					new Certificate[] { certificate });
 
+				//Now...you can write it to disk
 				keyStore.store(p12KeyStoreStream, SSL_KEYSTORE_SECRET.toCharArray());
 			}
 
@@ -126,6 +165,7 @@ public class SecurityUtil {
 			return keyManagerFactory.getKeyManagers();
 		}
 		finally {
+			//TODO remove this line to keep the keystore
 			FileUtil.deletePath(destination);
 		}
 	}
@@ -173,6 +213,9 @@ public class SecurityUtil {
 	 */
 	private static TrustManager[] getTrustManagers() {
 		return new TrustManager[] { new X509TrustManager() {
+	//Explanation of comments above: The TrustManager is supposed to keep a list of all the server certificates
+	//that *this* client trusts.  So, really the IoTCoreService's certificate (actually, its CA) should reside in here
+	//But to keep things simple, this trust manager trusts whatever certificate is provided by the IoT Service's server
 
 			@Override
 			public java.security.cert.X509Certificate[] getAcceptedIssuers() {
